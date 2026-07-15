@@ -14,6 +14,7 @@ COLUMN_TRANSLATIONS = {
     "jour": "date",
     "zone_de_sante": "health_zone",
     "zone_sante": "health_zone",
+    "nom": "health_zone",
     "nom_zone": "health_zone",
     "province": "province",
     "cas_confirmes": "confirmed_cases",
