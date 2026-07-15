@@ -47,8 +47,6 @@ def clean_and_sync():
             name_lower.startswith("cross_border") or
             name_lower.startswith("flowminder_short") or
             name_lower.startswith("grid3_healthsites") or
-            name_lower == "aliases.csv" or
-            name_lower == "province_aliases.csv" or
             name_lower.endswith(".shp")
         )
         
@@ -71,12 +69,6 @@ def clean_and_sync():
         try:
             if name_lower.endswith(".shp"):
                 processed_df = process_shapefile(file_path)
-            elif name_lower in ["aliases.csv", "province_aliases.csv"]:
-                # If loading the lookup tables themselves, filter down to keep only 'canonical_nom'
-                raw_df = pd.read_csv(file_path)
-                processed_df = clean_dataframe(raw_df)
-                if 'canonical_nom' in processed_df.columns:
-                    processed_df = processed_df[['canonical_nom']].drop_duplicates()
             else:
                 raw_df = pd.read_csv(file_path)
                 processed_df = clean_dataframe(raw_df)
@@ -89,7 +81,7 @@ def clean_and_sync():
         except Exception as e:
             print(f"❌ Failed to process '{filename}': {e}")
             
-    print(f"🎉 Complete! All previous tables cleared; {processed_count} mapped canonical tables deployed.")
+    print(f"🎉 Complete! All previous tables cleared; {processed_count} tables deployed successfully.")
 
 if __name__ == "__main__":
     clean_and_sync()
