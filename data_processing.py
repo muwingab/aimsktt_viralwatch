@@ -89,8 +89,6 @@ def join_insp_sitrep_csvs(input_dir: Path | str, output_path: Path | str) -> pd.
     
     if not csv_files:
         print("⚠️ Warning: No files starting with 'insp_sitrep*' found!")
-        if input_dir.exists():
-            print(f"Directory contents: {[f.name for f in input_dir.iterdir()]}")
         return pd.DataFrame(columns=["nom", "date"])
 
     print(f"📈 Found {len(csv_files)} files to merge.")
@@ -141,7 +139,6 @@ def join_insp_sitrep_csvs(input_dir: Path | str, output_path: Path | str) -> pd.
             print(f"      ❌ Failed to parse {csv_path.name}: {file_err}")
 
     if not frames:
-        print("⚠️ No valid data frames could be compiled from the matching files.")
         return pd.DataFrame(columns=["nom", "date"])
 
     print(f"🔄 Merging {len(frames)} dataframes...")
@@ -194,10 +191,7 @@ def _read_flowminder_frame(csv_path: Path) -> pd.DataFrame | None:
 
 
 def join_flowminder_csvs(input_dir: Path | str, output_path: Path | str) -> pd.DataFrame:
-    """
-    Join Flowminder files on the geography key (`nom`) and build a wide feature table.
-    Each input file contributes a single feature column named from the CSV filename.
-    """
+    """Join Flowminder files on geography key ('nom') to build a wide table."""
     input_dir = Path(input_dir)
     output_path = Path(output_path)
 
@@ -233,14 +227,61 @@ def join_flowminder_csvs(input_dir: Path | str, output_path: Path | str) -> pd.D
     return merged
 
 
-def main() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    input_dir = repo_root / "data_test"
-    output_path = repo_root / "output" / "flowminder_merged.csv"
+def join_worldpop_csvs(input_dir: Path | str, output_path: Path | str) -> pd.DataFrame:
+    """Finds WorldPop files (count and density) and merges them into a wide table."""
+    input_dir = Path(input_dir)
+    output_path = Path(output_path)
 
-    merged = join_flowminder_csvs(input_dir, output_path)
-    print(f"Wrote {len(merged)} rows to {output_path}")
+    csv_files = list(input_dir.glob("*worldpop*.csv"))
+    
+    count_file = None
+    density_file = None
 
+    for f in csv_files:
+        name_lower = f.name.lower()
+        if "density" in name_lower:
+            density_file = f
+        elif "count" in name_lower or "pop" in name_lower:
+            count_file = f
 
-if __name__ == "__main__":
-    main()
+    if not count_file and not density_file:
+        raise FileNotFoundError(f"No WorldPop count or density files found in {input_dir}")
+
+    if count_file:
+        print(f"📈 Reading WorldPop counts from: {count_file.name}")
+        df_count = pd.read_csv(count_file)
+        df_count.columns = df_count.columns.str.lower().str.strip()
+        df_count = df_count.rename(columns={
+            "zone_sante": "nom", "zone_de_sante": "nom", "health_zone": "nom", "nom_zone": "nom",
+            "value": "count", "population": "count"
+        })
+        df_count = df_count[["nom", "count"]].copy()
+    else:
+        df_count = pd.DataFrame(columns=["nom", "count"])
+
+    if density_file:
+        print(f"📈 Reading WorldPop density from: {density_file.name}")
+        df_density = pd.read_csv(density_file)
+        df_density.columns = df_density.columns.str.lower().str.strip()
+        df_density = df_density.rename(columns={
+            "zone_sante": "nom", "zone_de_sante": "nom", "health_zone": "nom", "nom_zone": "nom",
+            "value": "density"
+        })
+        df_density = df_density[["nom", "density"]].copy()
+    else:
+        df_density = pd.DataFrame(columns=["nom", "density"])
+
+    if not df_count.empty and not df_density.empty:
+        merged = pd.merge(df_count, df_density, on="nom", how="outer")
+    elif not df_count.empty:
+        merged = df_count
+        merged["density"] = np.nan
+    else:
+        merged = df_density
+        merged["count"] = np.nan
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    merged.to_csv(output_path, index=False)
+    print(f"💾 Merged WorldPop table created: {output_path}")
+    
+    return merged
