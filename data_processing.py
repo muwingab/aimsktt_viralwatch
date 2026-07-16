@@ -82,25 +82,75 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def load_fixed_matrix(osrm_url: str, aliases_url: str) -> pd.DataFrame:
-    """Downloads OSRM Matrix, applies positional diag-0 validation and resolves aliases."""
-    df = pd.read_csv(osrm_url, index_col=0)
-    if df.empty or (len(df.columns) < 2 and "version" in str(df.index[0])):
-         raise ValueError("The OSRM file is an invalid Git LFS placeholder instead of real data.")
+def join_insp_sitrep_csvs(input_dir: Path | str, output_path: Path | str) -> pd.DataFrame:
+    """Join all individual INSP SitRep CSV files on (nom, date) into a wide table."""
+    input_dir = Path(input_dir)
+    output_path = Path(output_path)
 
+    csv_files = sorted(input_dir.glob("insp_sitrep*.csv"))
+    if not csv_files:
+        raise FileNotFoundError(f"No insp_sitrep*.csv files found in {input_dir}")
+
+    frames: list[pd.DataFrame] = []
+    skipped_files: list[str] = []
+
+    for csv_path in csv_files:
+        with csv_path.open("r", encoding="utf-8") as handle:
+            first_line = handle.readline().strip().split(",")
+
+        if len(first_line) >= 2 and first_line[0].strip().lower() == "nom" and first_line[1].strip().lower() == "date":
+            df = pd.read_csv(csv_path)
+        else:
+            df = pd.read_csv(csv_path, header=None)
+            if df.shape[1] >= 3:
+                df = df.iloc[:, :3].copy()
+                df.columns = ["nom", "date", "value"]
+            else:
+                print(f"Skipping {csv_path.name}: expected at least 3 columns")
+                skipped_files.append(csv_path.name)
+                continue
+
+        if {"nom", "date"}.difference(df.columns):
+            print(f"Skipping {csv_path.name}: missing required columns")
+            skipped_files.append(csv_path.name)
+            continue
+
+        value_columns = [column for column in df.columns if column not in {"nom", "date"}]
+        if len(value_columns) != 1:
+            raise ValueError(f"{csv_path.name} must contain exactly one value column; found {value_columns}")
+
+        metric_name = csv_path.stem.split("__")[1] if len(csv_path.stem.split("__")) >= 2 else value_columns[0]
+        frame = df[["nom", "date", value_columns[0]]].copy()
+        frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        frame.rename(columns={value_columns[0]: metric_name}, inplace=True)
+        frames.append(frame)
+
+    if not frames:
+        raise RuntimeError(f"No frames to merge. Skipped files: {skipped_files}")
+
+    merged = frames[0]
+    for frame in frames[1:]:
+        merged = pd.merge(merged, frame, on=["nom", "date"], how="outer")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    merged.to_csv(output_path, index=False)
+    return merged
+
+
+def load_fixed_matrix(osrm_path: Path, aliases_path: Path) -> pd.DataFrame:
+    """Loads OSRM Matrix, applies positional diag-0 validation and resolves aliases."""
+    df = pd.read_csv(osrm_path, index_col=0)
     row_noms = df["nom"].tolist()
     dest_cols = [c for c in df.columns if c != "nom"]
     
-    # Position validation: diagonal must be zero
     diag = pd.Series([df.loc[df.index[i], dest_cols[i]] for i in range(len(row_noms))])
     if not (diag == 0).all():
          raise ValueError("Self-distance is not 0 for every zone! Positional columns alignment broken.")
 
     df.columns = ["nom"] + row_noms
     
-    # Resolve aliases
     try:
-        aliases = pd.read_csv(aliases_url)
+        aliases = pd.read_csv(aliases_path)
         alias_map = dict(zip(aliases["observed_name"], aliases["canonical_nom"]))
         df["nom"] = df["nom"].replace(alias_map)
         df.columns = ["nom"] + [alias_map.get(c, c) for c in df.columns[1:]]
@@ -110,9 +160,9 @@ def load_fixed_matrix(osrm_url: str, aliases_url: str) -> pd.DataFrame:
     return df.set_index("nom")
 
 
-def compute_osrm_nearest_active(osrm_url: str, aliases_url: str, sitrep_path: Path, out_path: Path) -> pd.DataFrame:
-    """Calculates traveling time from every zone to its nearest active-case counterpart."""
-    matrix = load_fixed_matrix(osrm_url, aliases_url)
+def compute_osrm_nearest_active(osrm_path: Path, aliases_path: Path, sitrep_path: Path, out_path: Path) -> pd.DataFrame:
+    """Calculates travel time from every zone to its nearest active-case counterpart."""
+    matrix = load_fixed_matrix(osrm_path, aliases_path)
     sitrep = pd.read_csv(sitrep_path)
     sitrep["date"] = pd.to_datetime(sitrep["date"])
 
@@ -136,9 +186,9 @@ def compute_osrm_nearest_active(osrm_url: str, aliases_url: str, sitrep_path: Pa
     return result
 
 
-def clean_and_merge_flowminder(flow_merged_url: str, out_path: Path) -> pd.DataFrame:
+def clean_and_merge_flowminder(flow_merged_path: Path, out_path: Path) -> pd.DataFrame:
     """Cleans flowminder dataframe by dropping static duplicated fields."""
-    df = pd.read_csv(flow_merged_url)
+    df = pd.read_csv(flow_merged_path)
     
     for col in df.columns:
         if col != "nom":
@@ -155,10 +205,10 @@ def clean_and_merge_flowminder(flow_merged_url: str, out_path: Path) -> pd.DataF
     return clean_df
 
 
-def merge_worldpop(pop_count_url: str, pop_density_url: str, out_path: Path) -> pd.DataFrame:
-    """Fetches bare headers worldpop count & density and merges them into one zone key."""
-    df_count = pd.read_csv(pop_count_url, header=None, names=["nom", "pop_count"], encoding="utf-8-sig")
-    df_density = pd.read_csv(pop_density_url, header=None, names=["nom", "pop_density"], encoding="utf-8-sig")
+def merge_worldpop(pop_count_path: Path, pop_density_path: Path, out_path: Path) -> pd.DataFrame:
+    """Merges WorldPop count & density files."""
+    df_count = pd.read_csv(pop_count_path, header=None, names=["nom", "pop_count"], encoding="utf-8-sig")
+    df_density = pd.read_csv(pop_density_path, header=None, names=["nom", "pop_density"], encoding="utf-8-sig")
     
     merged = pd.merge(df_count, df_density, on="nom", how="outer")
     out_path.parent.mkdir(parents=True, exist_ok=True)
