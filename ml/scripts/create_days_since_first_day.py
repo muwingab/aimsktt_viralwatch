@@ -9,13 +9,16 @@ def calculate_days_since_first_case_no_header(filepath):
     # 2. Assign explicit column names based on the known format:
     # Column 0: Health Zone, Column 1: Date, Column 2: Cumulative Cases
 # 2. Assign explicit column names
+# 2. Assign explicit column names
     df.columns = ['health_zone', 'date', 'value']
     
-    # 3. Clean the date strings to remove any rogue brackets or quotes BEFORE converting
+    # 3. Clean BOTH columns to remove rogue brackets, quotes, or spaces
     df['date'] = df['date'].astype(str).str.strip("[]'\" ")
+    df['value'] = df['value'].astype(str).str.strip("[]'\" ")
     
-    # Now the conversion will work perfectly!
+    # Convert them to their correct data types
     df['date'] = pd.to_datetime(df['date'])
+    df['value'] = pd.to_numeric(df['value'], errors='coerce').fillna(0).astype(int)
     
     # 4. Filter for rows where cumulative cases are greater than 0
     positive_cases = df[df['value'] > 0]
