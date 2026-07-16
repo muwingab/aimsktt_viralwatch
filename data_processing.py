@@ -75,63 +75,94 @@ def clean_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
+
 def join_insp_sitrep_csvs(input_dir: Path | str, output_path: Path | str) -> pd.DataFrame:
     """
-    Join all INSP SitRep CSV files on (nom, date) into a wide table.
-
-    Each file contributes one metric column, named after the filename.
-    Missing combinations remain as NaN.
+    Join ALL INSP SitRep CSV files on (nom, date) into a single wide table.
+    Ensures 'nom' is strictly the first column.
     """
     input_dir = Path(input_dir)
     output_path = Path(output_path)
 
+    print(f"📂 Searching for files in: {input_dir.resolve()}")
     csv_files = sorted(input_dir.glob("insp_sitrep*.csv"))
+    
     if not csv_files:
-        raise FileNotFoundError(f"No insp_sitrep*.csv files found in {input_dir}")
+        print("⚠️ Warning: No files starting with 'insp_sitrep*' found!")
+        return pd.DataFrame(columns=["nom", "date"])
 
+    print(f"📈 Found {len(csv_files)} files to merge.")
     frames: list[pd.DataFrame] = []
-    skipped_files: list[str] = []
 
     for csv_path in csv_files:
-        with csv_path.open("r", encoding="utf-8") as handle:
-            first_line = handle.readline().strip().split(",")
-
-        if len(first_line) >= 2 and first_line[0].strip().lower() == "nom" and first_line[1].strip().lower() == "date":
+        try:
             df = pd.read_csv(csv_path)
-        else:
-            df = pd.read_csv(csv_path, header=None)
-            if df.shape[1] >= 3:
-                df = df.iloc[:, :3].copy()
-                df.columns = ["nom", "date", "value"]
-            else:
-                print(f"Skipping {csv_path.name}: expected at least 3 columns")
-                skipped_files.append(csv_path.name)
+            df.columns = df.columns.str.lower().str.strip()
+
+            cols_to_drop = [col for col in df.columns if col in ['unnamed: 0', 'index']]
+            if cols_to_drop:
+                df = df.drop(columns=cols_to_drop)
+
+            rename_map = {}
+            for col in df.columns:
+                if col in ['nom', 'zone_sante', 'zone_de_sante', 'nom_zone', 'health_zone']:
+                    rename_map[col] = 'nom'
+                elif col in ['date', 'jour', 'date_rapport', 'date_notification']:
+                    rename_map[col] = 'date'
+            
+            df = df.rename(columns=rename_map)
+
+            if 'nom' not in df.columns and len(df.columns) > 0:
+                df.rename(columns={df.columns[0]: 'nom'}, inplace=True)
+            if 'date' not in df.columns and len(df.columns) > 1:
+                df.rename(columns={df.columns[1]: 'date'}, inplace=True)
+
+            if 'nom' not in df.columns or 'date' not in df.columns:
                 continue
 
-        if {"nom", "date"}.difference(df.columns):
-            print(f"Skipping {csv_path.name}: missing required columns")
-            skipped_files.append(csv_path.name)
-            continue
+            df['date'] = df['date'].astype(str).str.strip()
+            value_columns = [col for col in df.columns if col not in ['nom', 'date']]
+            
+            if not value_columns:
+                df[f"has_data_{csv_path.stem}"] = 1
+                value_columns = [f"has_data_{csv_path.stem}"]
 
-        value_columns = [column for column in df.columns if column not in {"nom", "date"}]
-        if len(value_columns) != 1:
-            raise ValueError(f"{csv_path.name} must contain exactly one value column; found {value_columns}")
+            file_metric_prefix = csv_path.stem.split("__")[1] if len(csv_path.stem.split("__")) >= 2 else csv_path.stem
 
-        metric_name = csv_path.stem.split("__")[1] if len(csv_path.stem.split("__")) >= 2 else value_columns[0]
-        frame = df[["nom", "date", value_columns[0]]].copy()
-        frame["date"] = pd.to_datetime(frame["date"], errors="coerce").dt.strftime("%Y-%m-%d")
-        frame.rename(columns={value_columns[0]: metric_name}, inplace=True)
-        frames.append(frame)
+            for col in value_columns:
+                if col in ['value', 'cases', 'count', 'valeur', 'nd']:
+                    unique_col_name = f"{file_metric_prefix}_{col}" if col == 'nd' else file_metric_prefix
+                    df.rename(columns={col: unique_col_name}, inplace=True)
+
+            frames.append(df)
+        except Exception as file_err:
+            print(f"      ❌ Failed to parse {csv_path.name}: {file_err}")
 
     if not frames:
-        raise RuntimeError(f"No frames to merge. Skipped files: {skipped_files}")
+        return pd.DataFrame(columns=["nom", "date"])
 
+    print(f"🔄 Merging {len(frames)} dataframes...")
     merged = frames[0]
-    for frame in frames[1:]:
-        merged = pd.merge(merged, frame, on=["nom", "date"], how="outer")
+    for i, frame in enumerate(frames[1:], start=1):
+        merged = pd.merge(
+            merged, 
+            frame, 
+            on=["nom", "date"], 
+            how="outer", 
+            suffixes=('', f'_dup_{i}')
+        )
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    merged.to_csv(output_path, index=False)
+    # Force 'nom' to be the first column
+    cols = ['nom'] + [col for col in merged.columns if col != 'nom']
+    merged = merged[cols]
+
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        merged.to_csv(output_path, index=False)
+        print(f"💾 Saved merged table to file: {output_path}")
+    except Exception as save_err:
+        print(f"⚠️ Could not write output file to disk: {save_err}")
+
     return merged
 
 
