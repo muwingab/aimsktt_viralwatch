@@ -5,7 +5,6 @@ import re
 from pathlib import Path
 import pandas as pd
 from sqlalchemy import create_engine, text
-from data_processing import clean_dataframe, join_insp_sitrep_csvs
 
 # 1. Fetch Connection String from Environment
 DATABASE_URL = os.environ.get("DATABASE_URL")
