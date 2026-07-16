@@ -2,7 +2,7 @@ name: Run Daily Pipeline
 
 on:
   schedule:
-    - cron: '0 8 * * *' # Example trigger
+    - cron: '0 8 * * *' # Run daily at 08:00 UTC
   workflow_dispatch:     # Allows manual triggering
 
 jobs:
@@ -10,11 +10,13 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # ─── 1. PUT THE LFS CHECKOUT HERE AT THE ABSOLUTE START ───
+      # ─── 1. CHECKOUT WITHOUT LFS (Skips missing server objects) ───
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          lfs: true # 👈 This downloads the actual OSRM matrix instead of a 133-byte placeholder!
+          lfs: false # 👈 Changed to false so it doesn't crash on missing LFS objects
+        env:
+          GIT_LFS_SKIP_SMUDGE: 1 # 👈 Force Git to bypass LFS download attempts completely
 
       # ─── 2. Set up Python environment ───
       - name: Set up Python
