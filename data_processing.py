@@ -135,73 +135,82 @@ def process_shapefile(file_path: str) -> pd.DataFrame:
 
 def join_insp_sitrep_csvs(input_dir: Path | str, output_path: Path | str) -> pd.DataFrame:
     """
-    Join ALL INSP SitRep CSV files on (nom, date) into a single wide table without losing any data.
+    Join ALL INSP SitRep CSV files on (nom, date) into a single wide table.
+    Gracefully returns an empty DataFrame if no files are found.
     """
     input_dir = Path(input_dir)
     output_path = Path(output_path)
 
+    print(f"📂 Searching for files in: {input_dir.resolve()}")
     csv_files = sorted(input_dir.glob("insp_sitrep*.csv"))
+    
+    # 🔎 LOGGING: Check if files were matched
     if not csv_files:
-        raise FileNotFoundError(f"No insp_sitrep*.csv files found in {input_dir}")
+        print("⚠️ Warning: No files starting with 'insp_sitrep*' found!")
+        # Print directory contents to help troubleshoot
+        if input_dir.exists():
+            print(f"Directory contents: {[f.name for f in input_dir.iterdir()]}")
+        return pd.DataFrame(columns=["nom", "date"])
 
+    print(f"📈 Found {len(csv_files)} files to merge.")
     frames: list[pd.DataFrame] = []
 
     for csv_path in csv_files:
-        # Load raw data
-        df = pd.read_csv(csv_path)
-        df.columns = df.columns.str.lower().str.strip()
+        print(f"   ↳ Reading file: {csv_path.name}")
+        try:
+            df = pd.read_csv(csv_path)
+            df.columns = df.columns.str.lower().str.strip()
 
-        # Dynamic header mapping to prevent dropouts
-        rename_map = {}
-        for col in df.columns:
-            if col in ['nom', 'zone_sante', 'zone_de_sante', 'nom_zone', 'health_zone']:
-                rename_map[col] = 'nom'
-            elif col in ['date', 'jour', 'date_rapport', 'date_notification']:
-                rename_map[col] = 'date'
-        
-        df = df.rename(columns=rename_map)
+            rename_map = {}
+            for col in df.columns:
+                if col in ['nom', 'zone_sante', 'zone_de_sante', 'nom_zone', 'health_zone']:
+                    rename_map[col] = 'nom'
+                elif col in ['date', 'jour', 'date_rapport', 'date_notification']:
+                    rename_map[col] = 'date'
+            
+            df = df.rename(columns=rename_map)
 
-        # Fallback: if 'nom' or 'date' are still missing, assign them to the first two columns
-        if 'nom' not in df.columns and len(df.columns) > 0:
-            df.rename(columns={df.columns[0]: 'nom'}, inplace=True)
-        if 'date' not in df.columns and len(df.columns) > 1:
-            df.rename(columns={df.columns[1]: 'date'}, inplace=True)
+            if 'nom' not in df.columns and len(df.columns) > 0:
+                df.rename(columns={df.columns[0]: 'nom'}, inplace=True)
+            if 'date' not in df.columns and len(df.columns) > 1:
+                df.rename(columns={df.columns[1]: 'date'}, inplace=True)
 
-        # Skip only if the file is completely empty
-        if 'nom' not in df.columns or 'date' not in df.columns:
-            print(f"⚠️ Warning: {csv_path.name} is missing usable columns. Skipping to avoid breakages.")
-            continue
+            if 'nom' not in df.columns or 'date' not in df.columns:
+                print(f"      ⚠️ Missing headers. Columns found: {list(df.columns)}")
+                continue
 
-        # Standardize date format without losing unparseable ones (keep as strings)
-        df['date'] = df['date'].astype(str).str.strip()
+            df['date'] = df['date'].astype(str).str.strip()
+            value_columns = [col for col in df.columns if col not in ['nom', 'date']]
+            
+            if not value_columns:
+                df[f"has_data_{csv_path.stem}"] = 1
+                value_columns = [f"has_data_{csv_path.stem}"]
 
-        # Identify metric columns (everything that is not nom or date)
-        value_columns = [col for col in df.columns if col not in ['nom', 'date']]
-        
-        # If there are no value columns, make a placeholder so the row matches are preserved
-        if not value_columns:
-            df[f"has_data_{csv_path.stem}"] = 1
-            value_columns = [f"has_data_{csv_path.stem}"]
+            for col in value_columns:
+                if col in ['value', 'cases', 'count', 'valeur']:
+                    metric_name = csv_path.stem.split("__")[1] if len(csv_path.stem.split("__")) >= 2 else csv_path.stem
+                    df.rename(columns={col: metric_name}, inplace=True)
 
-        # Rename the metric columns after the file suffix if they are generic (like 'value' or 'cases')
-        for col in value_columns:
-            if col in ['value', 'cases', 'count', 'valeur']:
-                metric_name = csv_path.stem.split("__")[1] if len(csv_path.stem.split("__")) >= 2 else csv_path.stem
-                df.rename(columns={col: metric_name}, inplace=True)
-
-        # Append to processing frames
-        frames.append(df)
+            frames.append(df)
+        except Exception as file_err:
+            print(f"      ❌ Failed to parse {csv_path.name}: {file_err}")
 
     if not frames:
-        raise RuntimeError("No valid data frames to merge.")
+        print("⚠️ No valid data frames could be compiled from the matching files.")
+        return pd.DataFrame(columns=["nom", "date"])
 
-    # Execute dynamic outer merge across all files
+    print(f"🔄 Merging {len(frames)} dataframes...")
     merged = frames[0]
     for frame in frames[1:]:
         merged = pd.merge(merged, frame, on=["nom", "date"], how="outer")
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    merged.to_csv(output_path, index=False)
+    try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        merged.to_csv(output_path, index=False)
+        print(f"💾 Saved merged table to file: {output_path}")
+    except Exception as save_err:
+        print(f"⚠️ Could not write output file to disk: {save_err}")
+
     return merged
 
 
